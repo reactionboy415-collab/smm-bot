@@ -3,7 +3,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
 # --- CONFIG ---
-TOKEN = "7963420197:AAGtGASUJo9viBUFa_fuhVtWAo53eRioplY"
+TOKEN = "7963420197:AAEBVLY-Ym_P387FEkkp4kA2bVcEPzUg72M"
 proxy_pool = [] 
 
 class ProxyHunter:
