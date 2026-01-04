@@ -1,12 +1,4 @@
-import asyncio
-import aiohttp
-import sqlite3
-import time
-import re
-import random
-import string
-import signal
-import os
+import asyncio, aiohttp, sqlite3, time, re, random, string, signal, os, gc
 from flask import Flask
 from threading import Thread
 from telegram import Update
@@ -14,28 +6,34 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 # ================= 🌐 HEALTH CHECK SERVER =================
 web_app = Flask(__name__)
-
 @web_app.route('/')
-def home():
-    return "🚀 SMM Bot is Alive and Running!", 200
+def home(): return "🚀 SMM Bot Ultra Fast Mode!", 200
 
 def run_web():
-    # Cloud platforms provide PORT env variable
     port = int(os.environ.get("PORT", 8080))
-    web_app.run(host='0.0.0.0', port=port)
+    web_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
 # ================= ⚙️ CONFIGURATION =================
 BOT_TOKEN = "7963420197:AAGkT11vdj3rhmbS2AHYw1wF9nE94ngQ1EA"
 ADMIN_ID = 7840042951
 
+# Added 10+ New Reliable Sources
 PROXY_SOURCES = [
-    "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+    "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all",
+    "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
     "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
-    "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000"
+    "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
+    "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt",
+    "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
+    "https://raw.githubusercontent.com/sunny9577/proxy-tester/master/proxies.txt",
+    "https://raw.githubusercontent.com/rooster127/proxy-list/main/http.txt",
+    "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt",
+    "https://www.proxy-list.download/api/v1/get?type=http",
+    "https://www.proxyscan.io/download?type=http"
 ]
 
 TEST_URL = "https://fameviso.com/free-instagram-views/"
-TIMEOUT = 6
+total_scanned = 0
 
 # ================= 🗄️ DATABASE SYSTEM =================
 db = sqlite3.connect("proxy_pool.db", check_same_thread=False)
@@ -45,169 +43,138 @@ db.commit()
 
 def get_random_proxy():
     cur.execute("SELECT proxy FROM proxies ORDER BY RANDOM() LIMIT 1")
-    r = cur.fetchone()
-    return r[0] if r else None
+    r = cur.fetchone(); return r[0] if r else None
 
 def remove_dead_proxy(proxy):
-    cur.execute("DELETE FROM proxies WHERE proxy = ?", (proxy,))
-    db.commit()
+    cur.execute("DELETE FROM proxies WHERE proxy = ?", (proxy,)); db.commit()
 
-# ================= 🛰️ PROXY HUNTER ENGINE =================
-async def fetch_source(session, url):
-    try:
-        async with session.get(url, timeout=10) as r:
-            return await r.text()
-    except: return ""
-
-async def test_proxy(session, proxy):
-    try:
-        async with session.get(TEST_URL, proxy=f"http://{proxy}", timeout=TIMEOUT) as r:
-            text = await r.text()
-            return "csrf_token" in text
-    except: return False
+# ================= 🛰️ ULTRA FAST HUNTER ENGINE =================
+async def test_proxy(session, proxy, semaphore):
+    global total_scanned
+    async with semaphore:
+        total_scanned += 1
+        try:
+            # Low timeout (4s) to skip slow proxies immediately
+            async with session.get(TEST_URL, proxy=f"http://{proxy}", timeout=4) as r:
+                if r.status == 200:
+                    if "csrf_token" in await r.text():
+                        cur.execute("INSERT OR REPLACE INTO proxies VALUES (?, ?)", (proxy, int(time.time())))
+                        db.commit()
+        except: pass
 
 async def proxy_worker():
+    # Performance Tuning: 100 concurrent tests for speed
+    sem = asyncio.Semaphore(100) 
+    connector = aiohttp.TCPConnector(limit=100, ttl_dns_cache=300)
+    
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(connector=connector) as session:
             while True:
-                texts = await asyncio.gather(*[fetch_source(session, u) for u in PROXY_SOURCES])
-                all_proxies = []
-                for t in texts:
-                    for line in re.findall(r'\d+\.\d+\.\d+\.\d+:\d+', t):
-                        all_proxies.append(line.strip())
+                all_proxies = set()
+                # Fetching from all sources in parallel
+                fetch_tasks = [session.get(url, timeout=15) for url in PROXY_SOURCES]
+                responses = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+                
+                for r in responses:
+                    if isinstance(r, aiohttp.ClientResponse):
+                        text = await r.text()
+                        found = re.findall(r'\d+\.\d+\.\d+\.\d+:\d+', text)
+                        all_proxies.update(found)
+                
+                proxy_list = list(all_proxies)
+                random.shuffle(proxy_list)
 
-                random.shuffle(all_proxies)
-                for i in range(0, len(all_proxies), 50):
-                    batch = all_proxies[i:i + 50]
-                    for proxy in batch:
-                        if await test_proxy(session, proxy):
-                            cur.execute("INSERT OR REPLACE INTO proxies VALUES (?, ?)", (proxy, int(time.time())))
-                            db.commit()
-                    await asyncio.sleep(20)
-                await asyncio.sleep(600)
-    except asyncio.CancelledError: pass
+                # Rapid Fire Testing in Chunks
+                for i in range(0, len(proxy_list), 200):
+                    batch = proxy_list[i:i+200]
+                    tasks = [test_proxy(session, p, sem) for p in batch]
+                    await asyncio.gather(*tasks)
+                    gc.collect() # Crucial for 490MB RAM
+                    await asyncio.sleep(1) # Tiny pause to prevent CPU pegging
 
-# ================= 💥 TASK BYPASS ATTACK ENGINE =================
+                await asyncio.sleep(180) # Re-scan every 3 mins
+    except Exception as e:
+        print(f"Worker Error: {e}")
+        await asyncio.sleep(10)
+
+# ================= 💥 BYPASS ENGINE =================
 async def run_attack(url, proxy):
     clean_url = url.split('?')[0]
     if not clean_url.endswith('/'): clean_url += '/'
-    
     boundary = '----WebKitFormBoundary' + ''.join(random.choices(string.ascii_letters + string.digits, k=16))
-    ua = f"Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.{random.randint(100,999)} Mobile Safari/537.36"
-    ext_ua = f"Fingerprint: fp_{int(time.time()*1000)} | User-agent: {ua}"
-
-    headers = {
-        "authority": "fameviso.com",
-        "content-type": f"multipart/form-data; boundary={boundary}",
-        "user-agent": ua,
-        "x-requested-with": "XMLHttpRequest",
-        "origin": "https://fameviso.com",
-        "referer": "https://fameviso.com/free-instagram-views/"
-    }
+    ua = f"Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.{random.randint(100,999)} Mobile Safari/537.36"
+    headers = {"content-type": f"multipart/form-data; boundary={boundary}", "user-agent": ua}
 
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.get(TEST_URL, proxy=f"http://{proxy}", timeout=8) as r:
-                html = await r.text()
-                csrf = re.search(r'name="csrf_token" value="(.*?)"', html).group(1)
+            async with session.get(TEST_URL, proxy=f"http://{proxy}", timeout=6) as r:
+                csrf = re.search(r'name="csrf_token" value="(.*?)"', await r.text()).group(1)
 
-            base_payload = (
-                f"--{boundary}\r\nContent-Disposition: form-data; name=\"csrf_token\"\r\n\r\n{csrf}\r\n"
-                f"--{boundary}\r\nContent-Disposition: form-data; name=\"service\"\r\n\r\n8061\r\n"
-                f"--{boundary}\r\nContent-Disposition: form-data; name=\"photoLink\"\r\n\r\n{clean_url}\r\n"
-                f"--{boundary}\r\nContent-Disposition: form-data; name=\"viewsQuantity\"\r\n\r\n250\r\n"
-                f"--{boundary}\r\nContent-Disposition: form-data; name=\"extended_user_agent\"\r\n\r\n{ext_ua}\r\n"
-            )
+            payload_base = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"csrf_token\"\r\n\r\n{csrf}\r\n"
+                            f"--{boundary}\r\nContent-Disposition: form-data; name=\"service\"\r\n\r\n8061\r\n"
+                            f"--{boundary}\r\nContent-Disposition: form-data; name=\"photoLink\"\r\n\r\n{clean_url}\r\n"
+                            f"--{boundary}\r\nContent-Disposition: form-data; name=\"viewsQuantity\"\r\n\r\n250\r\n")
 
-            data1 = base_payload + f"--{boundary}\r\nContent-Disposition: form-data; name=\"action_type\"\r\n\r\ninitial_request\r\n--{boundary}--\r\n"
-            async with session.post("https://fameviso.com/themes/vision/part/free-instagram-views/submitForm.php", 
-                                    data=data1, headers=headers, proxy=f"http://{proxy}", timeout=8) as r:
+            d1 = payload_base + f"--{boundary}\r\nContent-Disposition: form-data; name=\"action_type\"\r\n\r\ninitial_request\r\n--{boundary}--\r\n"
+            async with session.post(f"{TEST_URL}submitForm.php", data=d1, headers=headers, proxy=f"http://{proxy}", timeout=7) as r:
                 res1 = await r.json()
 
             if res1.get("status") == "tasks":
                 token = res1.get("request_token")
                 for task in res1.get('tasks', []):
-                    task_id = task['id']
-                    task_data = (
-                        f"--{boundary}\r\nContent-Disposition: form-data; name=\"csrf_token\"\r\n\r\n{csrf}\r\n"
-                        f"--{boundary}\r\nContent-Disposition: form-data; name=\"task_id\"\r\n\r\n{task_id}\r\n"
-                        f"--{boundary}\r\nContent-Disposition: form-data; name=\"request_token\"\r\n\r\n{token}\r\n"
-                        f"--{boundary}\r\nContent-Disposition: form-data; name=\"action_type\"\r\n\r\ntask_finish\r\n"
-                        f"--{boundary}--\r\n"
-                    )
-                    await session.post("https://fameviso.com/themes/vision/part/free-instagram-views/submitForm.php", 
-                                       data=task_data, headers=headers, proxy=f"http://{proxy}", timeout=8)
+                    t_payload = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"csrf_token\"\r\n\r\n{csrf}\r\n"
+                                 f"--{boundary}\r\nContent-Disposition: form-data; name=\"task_id\"\r\n\r\n{task['id']}\r\n"
+                                 f"--{boundary}\r\nContent-Disposition: form-data; name=\"request_token\"\r\n\r\n{token}\r\n"
+                                 f"--{boundary}\r\nContent-Disposition: form-data; name=\"action_type\"\r\n\r\ntask_finish\r\n--{boundary}--\r\n")
+                    await session.post(f"{TEST_URL}submitForm.php", data=t_payload, headers=headers, proxy=f"http://{proxy}", timeout=6)
                 
-                await asyncio.sleep(2)
-                data2 = base_payload + (
-                    f"--{boundary}\r\nContent-Disposition: form-data; name=\"request_token\"\r\n\r\n{token}\r\n"
-                    f"--{boundary}\r\nContent-Disposition: form-data; name=\"action_type\"\r\n\r\nverify_request\r\n"
-                    f"--{boundary}--\r\n"
-                )
-                async with session.post("https://fameviso.com/themes/vision/part/free-instagram-views/submitForm.php", 
-                                        data=data2, headers=headers, proxy=f"http://{proxy}", timeout=8) as r:
-                    final_res = await r.text()
-                    return "success" in final_res.lower()
-            
-            elif res1.get("status") in ["success", "proceed"]:
-                return True
-                
+                await asyncio.sleep(1)
+                d2 = payload_base + f"--{boundary}\r\nContent-Disposition: form-data; name=\"request_token\"\r\n\r\n{token}\r\n" + \
+                                    f"--{boundary}\r\nContent-Disposition: form-data; name=\"action_type\"\r\n\r\nverify_request\r\n--{boundary}--\r\n"
+                async with session.post(f"{TEST_URL}submitForm.php", data=d2, headers=headers, proxy=f"http://{proxy}", timeout=7) as r:
+                    return "success" in (await r.text()).lower()
+            return res1.get("status") in ["success", "proceed"]
         except: return False
-    return False
 
-# ================= 🤖 TELEGRAM HANDLERS =================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚀 **SMM MASTER V14 (ULTIMATE)**\nToken Updated Successfully!\nDrop your Instagram Reel link below!")
+# ================= 🤖 HANDLERS =================
+async def start(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    await u.message.reply_text("⏩ **SMM MASTER V17 (ULTRA SPEED)**\nDrop your link!")
 
-async def proxies_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
+async def proxies_cmd(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    if u.effective_user.id != ADMIN_ID: return
     cur.execute("SELECT COUNT(*) FROM proxies")
-    count = cur.fetchone()[0]
-    await update.message.reply_text(f"📊 **ADMIN STATUS**\nActive Proxies in DB: `{count}`", parse_mode="Markdown")
+    db_count = cur.fetchone()[0]
+    await u.message.reply_text(f"🚀 **LIVE ENGINE STATUS**\n━━━━━━━━━━━━━━━\n📡 Sources: `{len(PROXY_SOURCES)}` APIs\n✅ DB Ready: `{db_count}`\n🔍 Scanned: `{total_scanned}`")
 
-async def handle_dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = update.message.text
+async def handle_dispatch(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    url = u.message.text
     if "instagram.com" not in url: return
-    
-    status_msg = await update.message.reply_text("🛸 **Initializing Bypass Engine...**")
-    
-    success = False
+    m = await u.message.reply_text("⚡ **Fetching High-Speed Node...**")
     for attempt in range(1, 11):
         proxy = get_random_proxy()
         if not proxy: break
-        await status_msg.edit_text(f"🛰️ Attempt {attempt}/10\nNode: `{proxy}`\nStatus: Bypassing Tasks...")
-        
+        await m.edit_text(f"🚀 Attempt {attempt}/10\nNode: `{proxy}`")
         if await run_attack(url, proxy):
-            success = True
-            break
-        else: remove_dead_proxy(proxy)
-    
-    if success: await status_msg.edit_text("✅ **MISSION ACCOMPLISHED**\nViews are dispatched!")
-    else: await status_msg.edit_text("❌ **FAILED**\nAll nodes rejected the request.")
+            return await m.edit_text("✅ **MISSION SUCCESS**")
+        remove_dead_proxy(proxy)
+    await m.edit_text("❌ **FAILED**")
 
-# ================= ⚙️ MAIN EXECUTION =================
+# ================= ⚙️ MAIN =================
 async def main():
     Thread(target=run_web, daemon=True).start()
-
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("proxies", proxies_cmd))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_dispatch))
-
-    proxy_task = asyncio.create_task(proxy_worker())
-
+    p_task = asyncio.create_task(proxy_worker())
     async with app:
         await app.initialize(); await app.start()
-        print("🚀 BOT IS LIVE WITH NEW TOKEN")
         await app.updater.start_polling()
-        
-        stop_event = asyncio.Event()
+        stop = asyncio.Event()
         loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, lambda: stop_event.set())
-        
-        await stop_event.wait()
-        proxy_task.cancel(); await app.updater.stop(); await app.stop(); await app.shutdown()
+        for s in (signal.SIGINT, signal.SIGTERM): loop.add_signal_handler(s, stop.set)
+        await stop.wait()
+        p_task.cancel(); await app.shutdown()
 
 if __name__ == "__main__":
     try: asyncio.run(main())
