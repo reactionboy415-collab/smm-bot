@@ -1,169 +1,161 @@
-import asyncio, random, re, requests, httpx, time, threading, string
+import asyncio, random, re, requests, httpx, time, threading, string, json
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatMemberStatus, ParseMode
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-# --- FLASK SERVER (For 24/7 Hosting) ---
+# --- SECTION 1: FLASK UPTIME ---
 web_app = Flask(__name__)
 @web_app.route('/')
-def health_check(): return "<h1>SMM Bot is Active & Running!</h1>", 200
+def home(): return "SMM Master Pro is Active 🚀", 200
 def run_flask(): web_app.run(host='0.0.0.0', port=10000)
 
-# --- CONFIGURATION ---
-TOKEN = "7963420197:AAE3n_c6939u4EwEmOAj17d6g70bIIjdXNQ"
+# --- SECTION 2: CONFIG & DB ---
+TOKEN = "7963420197:AAGtGASUJo9viBUFa_fuhVtWAo53eRioplY"
 ADMIN_ID = 7840042951
-CHANNEL_ID = -1003470556336
-LOG_GROUP_ID = -1003619580926
+CHANNEL_ID = -1003470556336 
+CHANNEL_LINK = "https://t.me/+o0Pj60A5oI0zMmU1" 
 
-# Tracking Databases (In-Memory)
-user_cooldowns = {}   
-reel_cooldowns = {}   
+user_db = {} 
+reel_db = {}
+stats = {"total_orders": 0, "success": 0, "failed": 0}
 
-class SMMCore:
+class ProEngine:
     def __init__(self):
-        self.leofame_main = "https://leofame.com/free-instagram-views"
-        self.leofame_api = "https://leofame.com/free-instagram-views?api=1"
-        self.fameviso_api = "https://fameviso.com/themes/vision/part/free-instagram-views/submitForm.php"
-        self.my_proxy_api = "https://proxy-bot-g34t.onrender.com/api/raw?type=http&qty=500"
-        self.github_sources = [
+        self.proxies = []
+        self.proxy_sources = [
+            "https://proxy-bot-g34t.onrender.com/api/raw?type=http&qty=500",
             "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
-            "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
-            "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
-            "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt"
+            "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt"
         ]
-        self.working_proxies = []
 
-    def proxy_hunter_worker(self):
-        """Background Thread: Har 60 sec mein proxies refresh karega"""
+    # --- NEW: URL PURIFIER ---
+    def purify_url(self, raw_url):
+        """Removes ?igsh= and other parameters, returns clean URL with trailing slash"""
+        # Regex to find the base URL (reels/reel/p)
+        match = re.search(r'(https?://(?:www\.)?instagram\.com/(?:reels|reel|p)/[A-Za-z0-9_-]+)', raw_url)
+        if match:
+            clean_url = match.group(1)
+            if not clean_url.endswith('/'): clean_url += '/'
+            return clean_url
+        return None
+
+    def hunter_worker(self):
         while True:
-            all_raw = []
-            try:
-                r = requests.get(self.my_proxy_api, timeout=10)
-                if r.status_code == 200: all_raw.extend(r.text.splitlines())
-            except: pass
-            for src in self.github_sources:
+            raw_ips = []
+            for src in self.proxy_sources:
                 try:
                     res = requests.get(src, timeout=10)
-                    if res.status_code == 200: all_raw.extend(res.text.splitlines())
+                    if res.status_code == 200: raw_ips.extend(res.text.splitlines())
                 except: continue
-            
-            all_raw = list(set([p.strip() for p in all_raw if ":" in p]))
-            random.shuffle(all_raw)
-            temp_working = []
-            for p in all_raw[:80]:
+            raw_ips = list(set([i.strip() for i in raw_ips if ":" in i]))
+            random.shuffle(raw_ips)
+            valid = []
+            for p in raw_ips[:100]:
                 try:
-                    px_addr = f"http://{p}"
-                    # Fast test
-                    test = requests.get("https://fameviso.com/", proxies={"http": px_addr, "https": px_addr}, timeout=3)
-                    if test.status_code == 200:
-                        temp_working.append(px_addr)
-                        if len(temp_working) >= 45: break
+                    if requests.get("https://fameviso.com/", proxies={"http": f"http://{p}"}, timeout=3).status_code == 200:
+                        valid.append(f"http://{p}")
+                        if len(valid) >= 40: break
                 except: continue
-            if temp_working: self.working_proxies = temp_working
-            time.sleep(60)
+            if valid: self.proxies = valid
+            time.sleep(120)
 
-    def _extract_id(self, link):
-        match = re.search(r'/(?:reels|reel|p)/([A-Za-z0-9_-]+)', link)
-        return match.group(1) if match else None
-
-    # ENGINE 1: LEOFAME
-    async def fire_leofame(self, link):
-        proxy = random.choice(self.working_proxies) if self.working_proxies else None
-        session = requests.Session()
-        if proxy: session.proxies = {"http": proxy, "https": proxy}
-        try:
-            r = session.get(self.leofame_main, timeout=10)
-            token = re.search(r'name="token" value="([a-f0-9]+)"', r.text).group(1)
-            payload = {"token": token, "timezone_offset": "Asia/Calcutta", "free_link": link, "quantity": "200"}
-            resp = session.post(self.leofame_api, data=payload, timeout=15)
-            return '"success":"Success"' in resp.text, proxy
-        except: return False, proxy
-
-    # ENGINE 2: FAMEVISO
-    async def fire_fameviso(self, link):
-        proxy = random.choice(self.working_proxies) if self.working_proxies else None
+    async def attack(self, clean_url):
+        proxy = random.choice(self.proxies) if self.proxies else None
         boundary = '----WebKitFormBoundary' + ''.join(random.choices(string.ascii_letters + string.digits, k=16))
-        headers = {"authority": "fameviso.com", "content-type": f"multipart/form-data; boundary={boundary}", "origin": "https://fameviso.com", "referer": "https://fameviso.com/free-instagram-views/", "user-agent": "Mozilla/5.0 (Linux; Android 14) Chrome/121.0.0.0"}
-        
-        async with httpx.AsyncClient(proxies=proxy, verify=False, timeout=25.0) as client:
+        ua = f"Mozilla/5.0 (Linux; Android 14; SM-G99{random.randint(1,9)}B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.{random.randint(1000,9999)} Mobile Safari/537.36"
+        fp = f"fp_{int(time.time()*1000)}"
+        ext_ua = f"Fingerprint: {fp} | User-agent: {ua}"
+
+        headers = {
+            "authority": "fameviso.com",
+            "content-type": f"multipart/form-data; boundary={boundary}",
+            "user-agent": ua,
+            "x-requested-with": "XMLHttpRequest",
+            "origin": "https://fameviso.com",
+            "referer": "https://fameviso.com/free-instagram-views/"
+        }
+
+        async with httpx.AsyncClient(proxies=proxy, http2=True, timeout=30.0, verify=False) as client:
             try:
                 land = await client.get("https://fameviso.com/free-instagram-views/")
-                csrf = re.search(r'name="csrf_token" value="(.*?)"', land.text).group(1)
-                base_data = f"--{boundary}\r\nContent-Disposition: form-data; name=\"csrf_token\"\r\n\r\n{csrf}\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"service\"\r\n\r\n8061\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"photoLink\"\r\n\r\n{link}\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"viewsQuantity\"\r\n\r\n250\r\n"
-                # Step 1
-                r1 = await client.post(self.fameviso_api, content=(base_data + f"--{boundary}\r\nContent-Disposition: form-data; name=\"action_type\"\r\n\r\ninitial_request\r\n--{boundary}--\r\n").encode('utf-8'), headers=headers)
+                csrf = re.search(r'name=\"csrf_token\" value=\"(.*?)\"', land.text).group(1)
+                await asyncio.sleep(random.uniform(2, 4)) 
+
+                base_payload = (
+                    f"--{boundary}\r\nContent-Disposition: form-data; name=\"csrf_token\"\r\n\r\n{csrf}\r\n"
+                    f"--{boundary}\r\nContent-Disposition: form-data; name=\"service\"\r\n\r\n8061\r\n"
+                    f"--{boundary}\r\nContent-Disposition: form-data; name=\"photoLink\"\r\n\r\n{clean_url}\r\n"
+                    f"--{boundary}\r\nContent-Disposition: form-data; name=\"viewsQuantity\"\r\n\r\n250\r\n"
+                    f"--{boundary}\r\nContent-Disposition: form-data; name=\"extended_user_agent\"\r\n\r\n{ext_ua}\r\n"
+                )
+
+                r1 = await client.post("https://fameviso.com/themes/vision/part/free-instagram-views/submitForm.php", 
+                                      content=(base_payload + f"--{boundary}\r\nContent-Disposition: form-data; name=\"action_type\"\r\n\r\ninitial_request\r\n--{boundary}--\r\n").encode('utf-8'), 
+                                      headers=headers)
+                
                 if r1.json().get("status") == "proceed":
                     token = r1.json().get("request_token")
-                    await asyncio.sleep(2)
-                    # Step 2
-                    p2 = base_data + f"--{boundary}\r\nContent-Disposition: form-data; name=\"request_token\"\r\n\r\n{token}\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"action_type\"\r\n\r\nverify_request\r\n--{boundary}--\r\n"
-                    r2 = await client.post(self.fameviso_api, content=p2.encode('utf-8'), headers=headers)
-                    return "success" in r2.text.lower(), proxy
+                    await asyncio.sleep(3) 
+                    data2 = base_payload + f"--{boundary}\r\nContent-Disposition: form-data; name=\"request_token\"\r\n\r\n{token}\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"action_type\"\r\n\r\nverify_request\r\n--{boundary}--\r\n"
+                    r2 = await client.post("https://fameviso.com/themes/vision/part/free-instagram-views/submitForm.php", content=data2.encode('utf-8'), headers=headers)
+                    return "success" in r2.text, proxy
                 return False, proxy
             except: return False, proxy
 
-smm = SMMCore()
+core = ProEngine()
 
-# --- HANDLERS ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- SECTION 3: BOT LOGIC ---
+async def is_member(user_id, context):
+    try:
+        member = await context.bot.get_chat_member(CHANNEL_ID, user_id)
+        return member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
+    except: return False
+
+async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    welcome_text = (
-        f"👋 <b>Hello {user.first_name}!</b>\n\n"
-        f"🚀 <b>Power SMM Bot V80 is Ready.</b>\n"
-        f"Send any Instagram Reel/Post link to get 200+ views for free.\n\n"
-        f"⚠️ <b>Limit:</b> Once per 24 hours per user/reel."
-    )
-    await update.message.reply_text(welcome_text, parse_mode=ParseMode.HTML)
-
-async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    url = update.message.text
-    if "instagram.com" not in url: return
+    raw_url = update.message.text
+    if "instagram.com" not in raw_url: return
     
-    reel_id = smm._extract_id(url)
-    if not reel_id: return
+    # Force Join Check
+    if not await is_member(user.id, context):
+        btn = [[InlineKeyboardButton("Join Channel", url=CHANNEL_LINK)]]
+        return await update.message.reply_text("❌ <b>Access Denied!</b>\n\nPlease join our channel first to use this bot.", 
+                                              reply_markup=InlineKeyboardMarkup(btn), parse_mode=ParseMode.HTML)
 
-    # Admin Logging Utility
-    async def log_to_admin(status, srv, px):
-        msg = f"🔔 <b>NEW ORDER LOG</b>\n👤 User: {user.first_name}\n🔗 Reel: {reel_id}\n⚙️ Server: {srv}\n🌐 Proxy: {px}\n✅ Status: {'SUCCESS' if status else 'FAILED'}"
-        try: await context.bot.send_message(chat_id=ADMIN_ID, text=msg, parse_mode=ParseMode.HTML)
-        except: pass
+    # Clean the URL automatically
+    clean_url = core.purify_url(raw_url)
+    if not clean_url:
+        return await update.message.reply_text("❌ Invalid Instagram Link format.")
 
-    current_time = time.time()
-    # Checks
-    if user.id in user_cooldowns and current_time - user_cooldowns[user.id] < 86400:
-        return await update.message.reply_text("⏳ Limit: Come back after 24 hours.")
-    if reel_id in reel_cooldowns and current_time - reel_cooldowns[reel_id] < 86400:
-        return await update.message.reply_text("⚠️ This reel already received views today.")
+    # Extract ID for database tracking
+    reel_id = re.search(r'/(?:reels|reel|p)/([A-Za-z0-9_-]+)', clean_url).group(1)
 
-    status_msg = await update.message.reply_text("🛡️ <b>Verifying link and activating server...</b>", parse_mode=ParseMode.HTML)
+    now = time.time()
+    if user.id in user_db and now - user_db[user.id] < 86400:
+        return await update.message.reply_text("⏳ <b>Cooldown:</b> Please wait 24h.")
+    if reel_id in reel_db and now - reel_db[reel_id] < 86400:
+        return await update.message.reply_text("⚠️ <b>Reel Block:</b> Views already sent.")
+
+    status_msg = await update.message.reply_text(f"⚡ <b>Purifying Link & Bypassing...</b>\n<code>{clean_url}</code>", parse_mode=ParseMode.HTML)
     
-    # Try Server 1
-    success, p_used = await smm.fire_leofame(url)
-    srv_name = "Leofame (S1)"
+    stats['total_orders'] += 1
+    success, px = await core.attack(clean_url)
     
-    if not success:
-        await status_msg.edit_text("🔄 Server 1 busy. Triggering Backup Engine...")
-        success, p_used = await smm.fire_fameviso(url)
-        srv_name = "Fameviso (S2)"
-
     if success:
-        user_cooldowns[user.id] = current_time
-        reel_cooldowns[reel_id] = current_time
-        await status_msg.edit_text("✅ <b>Views Dispatched!</b> Enjoy your free service.")
-        await log_to_admin(True, srv_name, p_used)
+        user_db[user.id] = now
+        reel_db[reel_id] = now
+        stats['success'] += 1
+        await status_msg.edit_text(f"✅ <b>Success!</b>\nViews are sent to: <code>{clean_url}</code>", parse_mode=ParseMode.HTML)
+        await context.bot.send_message(ADMIN_ID, f"🔔 <b>Success</b>\nUser: {user.first_name}\nURL: {clean_url}")
     else:
-        await status_msg.edit_text("❌ All servers are currently busy. Try again later.")
-        await log_to_admin(False, srv_name, p_used)
+        stats['failed'] += 1
+        await status_msg.edit_text("❌ <b>Failed:</b> Server busy or Invalid Link. Try again later.")
 
 if __name__ == '__main__':
     threading.Thread(target=run_flask, daemon=True).start()
-    threading.Thread(target=smm.proxy_hunter_worker, daemon=True).start()
-    
+    threading.Thread(target=core.hunter_worker, daemon=True).start()
     app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_link))
-    
-    print("🚀 Bot V80 is Live & Powerful!")
+    app.add_handler(CommandHandler("start", lambda u,c: u.message.reply_text("🚀 Send IG Link!")))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_msg))
     app.run_polling()
