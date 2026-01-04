@@ -11,7 +11,7 @@ def health_check(): return "<h1>SMM Bot is Active & Running!</h1>", 200
 def run_flask(): web_app.run(host='0.0.0.0', port=10000)
 
 # --- CONFIGURATION ---
-TOKEN = "8344334544:AAGRoUZm7mtjeqbqPSgUKhU4lqTb5dLRYWA"
+TOKEN = "7963420197:AAE3n_c6939u4EwEmOAj17d6g70bIIjdXNQ"
 ADMIN_ID = 7840042951
 CHANNEL_ID = -1003470556336
 LOG_GROUP_ID = -1003619580926
