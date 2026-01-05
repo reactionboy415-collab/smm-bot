@@ -1,14 +1,14 @@
 import asyncio, aiohttp, sqlite3, time, re, random, string, signal, os, gc
 from flask import Flask
 from threading import Thread
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from fake_useragent import UserAgent
+from telegram.constants import ParseMode
 
 # ================= 🌐 HEALTH CHECK SERVER =================
 web_app = Flask(__name__)
 @web_app.route('/')
-def home(): return "🚀 SMM Bot v20 - Ultra Stable", 200
+def home(): return "🚀 SMM Bot v23 - System Online", 200
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
@@ -17,12 +17,16 @@ def run_web():
 # ================= ⚙️ CONFIGURATION =================
 BOT_TOKEN = "7963420197:AAGkT11vdj3rhmbS2AHYw1wF9nE94ngQ1EA"
 ADMIN_ID = 7840042951
-ua_gen = UserAgent()
+
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1"
+]
 
 PROXY_SOURCES = [
-    "https://proxy-bot-g34t.onrender.com/api/raw?type=http&qty=50000", # Reduced qty slightly to save RAM
+    "https://proxy-bot-g34t.onrender.com/api/raw?type=http&qty=50000",
     "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000",
-    "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
     "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt"
 ]
 
@@ -45,75 +49,61 @@ def mark_fail(proxy):
     cur.execute("DELETE FROM proxies WHERE fail_count > 4")
     db.commit()
 
-# ================= 🛰️ ADVANCED HUNTER ENGINE =================
+# ================= 🛰️ PROXY HUNTER =================
 async def test_proxy(session, proxy, semaphore):
     global total_scanned
     async with semaphore:
         total_scanned += 1
         try:
-            headers = {'User-Agent': ua_gen.random}
+            headers = {'User-Agent': random.choice(USER_AGENTS)}
             async with session.get(TEST_URL, proxy=f"http://{proxy}", timeout=5, headers=headers) as r:
-                if r.status == 200:
-                    text = await r.text()
-                    if 'csrf_token' in text:
-                        cur.execute("INSERT OR REPLACE INTO proxies (proxy, last_ok, fail_count) VALUES (?, ?, 0)", (proxy, int(time.time())))
-                        db.commit()
+                if r.status == 200 and 'csrf_token' in await r.text():
+                    cur.execute("INSERT OR REPLACE INTO proxies (proxy, last_ok, fail_count) VALUES (?, ?, 0)", (proxy, int(time.time())))
+                    db.commit()
         except: pass
 
 async def proxy_worker():
-    sem = asyncio.Semaphore(100) # Balanced for Render/VPS
+    sem = asyncio.Semaphore(100)
     async with aiohttp.ClientSession() as session:
         while True:
-            all_proxies = set()
-            for source in PROXY_SOURCES:
+            all_p = set()
+            for src in PROXY_SOURCES:
                 try:
-                    async with session.get(source, timeout=30) as r:
-                        text = await r.text()
-                        # Use iterator to save memory on large text
-                        for match in re.finditer(r'\d+\.\d+\.\d+\.\d+:\d+', text):
-                            all_proxies.add(match.group())
+                    async with session.get(src, timeout=20) as r:
+                        for m in re.finditer(r'\d+\.\d+\.\d+\.\d+:\d+', await r.text()): all_p.add(m.group())
                 except: continue
-            
-            p_list = list(all_proxies)
-            random.shuffle(p_list)
-            
-            # Batch testing to prevent CPU spikes
+            p_list = list(all_p); random.shuffle(p_list)
             for i in range(0, len(p_list), 200):
-                batch = p_list[i:i+200]
-                await asyncio.gather(*[test_proxy(session, p, sem) for p in batch])
-                gc.collect() 
-                await asyncio.sleep(1)
-            
+                await asyncio.gather(*[test_proxy(session, p, sem) for p in p_list[i:i+200]])
+                gc.collect(); await asyncio.sleep(1)
             await asyncio.sleep(300)
 
 # ================= 💥 BYPASS ENGINE =================
 async def run_attack(url, proxy):
     boundary = '----WebKitFormBoundary' + ''.join(random.choices(string.ascii_letters + string.digits, k=16))
     headers = {
-        "User-Agent": ua_gen.random,
-        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "User-Agent": random.choice(USER_AGENTS),
         "Origin": "https://fameviso.com",
-        "Referer": "https://fameviso.com/free-instagram-views/",
+        "Referer": TEST_URL,
         "Content-Type": f"multipart/form-data; boundary={boundary}",
         "X-Requested-With": "XMLHttpRequest"
     }
 
     async with aiohttp.ClientSession(headers=headers) as session:
         try:
-            # 1. Fetch CSRF
-            async with session.get(TEST_URL, proxy=f"http://{proxy}", timeout=10) as r:
-                page = await r.text()
-                csrf = re.search(r'name="csrf_token" value="(.*?)"', page).group(1)
+            async with session.get(TEST_URL, proxy=f"http://{proxy}", timeout=8) as r:
+                csrf = re.search(r'name="csrf_token" value="(.*?)"', await r.text()).group(1)
 
-            base_payload = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"csrf_token\"\r\n\r\n{csrf}\r\n"
+            payload_base = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"csrf_token\"\r\n\r\n{csrf}\r\n"
                             f"--{boundary}\r\nContent-Disposition: form-data; name=\"service\"\r\n\r\n8061\r\n"
                             f"--{boundary}\r\nContent-Disposition: form-data; name=\"photoLink\"\r\n\r\n{url}\r\n"
                             f"--{boundary}\r\nContent-Disposition: form-data; name=\"viewsQuantity\"\r\n\r\n250\r\n")
 
-            # 2. Step 1 Request
-            d1 = base_payload + f"--{boundary}\r\nContent-Disposition: form-data; name=\"action_type\"\r\n\r\ninitial_request\r\n--{boundary}--\r\n"
-            async with session.post(f"{TEST_URL}submitForm.php", data=d1, proxy=f"http://{proxy}", timeout=12) as r:
+            d1 = payload_base + f"--{boundary}\r\nContent-Disposition: form-data; name=\"action_type\"\r\n\r\ninitial_request\r\n--{boundary}--\r\n"
+            async with session.post(f"{TEST_URL}submitForm.php", data=d1, proxy=f"http://{proxy}", timeout=10) as r:
                 res1 = await r.json()
+
+            server_msg = res1.get("message", "Unknown Error")
 
             if res1.get("status") == "tasks":
                 token = res1.get("request_token")
@@ -122,44 +112,78 @@ async def run_attack(url, proxy):
                              f"--{boundary}\r\nContent-Disposition: form-data; name=\"task_id\"\r\n\r\n{task['id']}\r\n"
                              f"--{boundary}\r\nContent-Disposition: form-data; name=\"request_token\"\r\n\r\n{token}\r\n"
                              f"--{boundary}\r\nContent-Disposition: form-data; name=\"action_type\"\r\n\r\ntask_finish\r\n--{boundary}--\r\n")
-                    await session.post(f"{TEST_URL}submitForm.php", data=t_pay, proxy=f"http://{proxy}", timeout=10)
+                    await session.post(f"{TEST_URL}submitForm.php", data=t_pay, proxy=f"http://{proxy}", timeout=8)
                 
-                # 3. Verify
-                d2 = base_payload + f"--{boundary}\r\nContent-Disposition: form-data; name=\"request_token\"\r\n\r\n{token}\r\n" + \
+                d2 = payload_base + f"--{boundary}\r\nContent-Disposition: form-data; name=\"request_token\"\r\n\r\n{token}\r\n" + \
                                     f"--{boundary}\r\nContent-Disposition: form-data; name=\"action_type\"\r\n\r\nverify_request\r\n--{boundary}--\r\n"
-                async with session.post(f"{TEST_URL}submitForm.php", data=d2, proxy=f"http://{proxy}", timeout=12) as r:
-                    return "success" in (await r.text()).lower()
-            return False
-        except: return False
+                async with session.post(f"{TEST_URL}submitForm.php", data=d2, proxy=f"http://{proxy}", timeout=10) as r:
+                    res_final = await r.text()
+                    if "success" in res_final.lower(): return True, "Success"
+                    return False, "Verification Failed"
+            
+            return False, server_msg
+        except Exception: return False, "Proxy Connection Error"
 
 # ================= 🤖 HANDLERS =================
 async def start(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    await u.message.reply_text("🔥 **SMM MASTER V20 ACTIVE**\nSend your Instagram link to start.")
+    welcome_text = (
+        "✨ *WELCOME TO SMM MASTER V23* ✨\n\n"
+        "🚀 *The Fastest Instagram Views Bot*\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "📍 *How to use:*\n"
+        "Just send your Instagram Reel/Post link below.\n\n"
+        "✅ *Features:*\n"
+        "• 50,000+ Fresh Proxies Hourly\n"
+        "• Anti-Block Technology\n"
+        "• Real Server Response Logs\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "📢 *Status:* `SYSTEM ONLINE`"
+    )
+    await u.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN)
 
 async def handle_dispatch(u: Update, c: ContextTypes.DEFAULT_TYPE):
     url = u.message.text
-    if "instagram.com" not in url: return
+    if "instagram.com" not in url:
+        return await u.message.reply_text("❌ *Invalid Link!* Please send a valid Instagram URL.", parse_mode=ParseMode.MARKDOWN)
     
-    msg = await u.message.reply_text("🔄 **Checking Proxy Health...**")
+    status_msg = await u.message.reply_text("🔍 *Searching for a high-speed node...*", parse_mode=ParseMode.MARKDOWN)
+    
+    last_response = "No response"
     
     for i in range(1, 11):
         proxy = get_best_proxy()
-        if not proxy:
-            return await msg.edit_text("❌ DB Empty. Waiting for hunter...")
-
-        await msg.edit_text(f"🚀 **Attempt {i}/10**\n📡 Node: `{proxy}`")
-        if await run_attack(url, proxy):
-            return await msg.edit_text("✅ **SUCCESS! Views Sent.**")
+        if not proxy: 
+            return await status_msg.edit_text("⏳ *Proxy pool warming up...* Try in 60 seconds.")
+        
+        await status_msg.edit_text(f"🚀 *Attempt {i}/10*\n📡 Connecting via: `{proxy}`", parse_mode=ParseMode.MARKDOWN)
+        success, server_text = await run_attack(url, proxy)
+        
+        if success:
+            final_text = (
+                "✅ *MISSION SUCCESSFUL*\n\n"
+                f"🔗 *Link:* `{url}`\n"
+                "⚡ *Status:* Views Sent to Server\n"
+                "📝 *Message:* `The process is being processed...`"
+            )
+            return await status_msg.edit_text(final_text, parse_mode=ParseMode.MARKDOWN)
         else:
+            last_response = server_text
             mark_fail(proxy)
-    
-    await msg.edit_text("❌ **All proxies failed. Site security is high.**")
+            # Stop if server says limit reached
+            if any(word in server_text.lower() for word in ["limit", "already", "daily"]):
+                break
+
+    fail_text = (
+        "❌ *SUBMISSION FAILED*\n\n"
+        f"📩 *Server Message:* `{last_response}`\n\n"
+        "💡 *Hint:* If it says 'Already Claimed', the server has blocked this link for 24 hours."
+    )
+    await status_msg.edit_text(fail_text, parse_mode=ParseMode.MARKDOWN)
 
 async def proxies_cmd(u: Update, c: ContextTypes.DEFAULT_TYPE):
     if u.effective_user.id != ADMIN_ID: return
-    cur.execute("SELECT COUNT(*) FROM proxies")
-    count = cur.fetchone()[0]
-    await u.message.reply_text(f"📊 **Bot Status**\nProxies in DB: `{count}`\nScanned today: `{total_scanned}`")
+    cur.execute("SELECT COUNT(*) FROM proxies"); count = cur.fetchone()[0]
+    await u.message.reply_text(f"📊 *ADMIN DASHBOARD*\n━━━━━━━━━━━━━━\n✅ Active Proxies: `{count}`\n📡 Sources: `3` Sources", parse_mode=ParseMode.MARKDOWN)
 
 # ================= ⚙️ MAIN =================
 async def main():
@@ -168,25 +192,15 @@ async def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("proxies", proxies_cmd))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_dispatch))
-    
     p_task = asyncio.create_task(proxy_worker())
-    
     async with app:
-        await app.initialize()
-        await app.start()
-        await app.updater.start_polling()
-        
-        stop = asyncio.Event()
-        loop = asyncio.get_running_loop()
+        await app.initialize(); await app.start(); await app.updater.start_polling()
+        stop = asyncio.Event(); loop = asyncio.get_running_loop()
         for s in (signal.SIGINT, signal.SIGTERM):
             try: loop.add_signal_handler(s, stop.set)
             except: pass
-                
-        await stop.wait()
-        p_task.cancel()
-        await app.shutdown()
+        await stop.wait(); p_task.cancel(); await app.shutdown()
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
+    try: asyncio.run(main())
     except (KeyboardInterrupt, SystemExit): pass
